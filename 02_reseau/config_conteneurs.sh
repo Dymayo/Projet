@@ -1,4 +1,7 @@
-
+#!/bin/bash -eu
+# config_conteneurs.sh : branche chaque conteneur sur br-infra, lui donne son IP
+# fixe (netplan), remplit /etc/hosts et active le demarrage auto.
+# (a lancer sur la VM, en root, apres 01_lxc/create_cloned_servers.sh). Idempotent.
 
 . "$(dirname "$0")/reseau.conf"
 
@@ -48,6 +51,12 @@ network:
 EOF
 }
 
+# Remplace (ou ajoute) une cle dans la config LXC d'un conteneur
+set_lxc() { local conf="$1" cle="$2" val="$3"
+    sed -i "/^${cle//./\\.} *=/d" "$conf"
+    echo "$cle = $val" >> "$conf"
+}
+
 for m in $MACHINES ; do
     nom=${m%%:*} ; ip=${m#*:}
     conf="$LXCPATH/$nom/config"
@@ -59,8 +68,10 @@ for m in $MACHINES ; do
 
     lxc-stop -n "$nom" 2>/dev/null || true
 
-    # 1. Brancher sur le bridge du projet
-    sed -i "s/^lxc.net.0.link *=.*/lxc.net.0.link = $BRIDGE/" "$conf"
+    # 1. Brancher sur le bridge du projet + demarrage auto au boot de la VM
+    set_lxc "$conf" lxc.net.0.link "$BRIDGE"
+    set_lxc "$conf" lxc.start.auto 1
+    set_lxc "$conf" lxc.start.delay 2
 
     root=$(rootfs_of "$nom")
     mkdir -p "$root/etc/netplan"
@@ -83,9 +94,9 @@ for m in $MACHINES ; do
     lxc-start -n "$nom"
 done
 
-# /etc/hosts de la VM : on remplace les anciennes IP 10.0.3.x
-for m in $MACHINES ; do
-    sed -i "/ ${m%%:*}\$/d; / ${m%%:*}\.$DOMAIN /d" /etc/hosts
+# /etc/hosts de la VM : on retire les anciennes lignes de nos machines puis on reecrit
+for nom in $HOSTS ; do
+    sed -i "/[[:space:]]$nom\$/d; /[[:space:]]${nom}\.${DOMAIN}[[:space:]]/d" /etc/hosts
 done
 hosts_lines >> /etc/hosts
 

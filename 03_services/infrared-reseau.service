@@ -1,0 +1,21 @@
+# Unit systemd : remonte le bridge et le NAT du projet au boot de la VM,
+# AVANT que LXC demarre les conteneurs (lxc.start.auto = 1).
+# Installe par install_service_reseau.sh dans /etc/systemd/system/
+#   systemctl start|stop|status infrared-reseau
+#   journalctl -u infrared-reseau
+
+[Unit]
+Description=INFRARED : bridge br-infra + NAT pour les conteneurs
+After=network-online.target
+Wants=network-online.target
+Before=lxc.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/infrared/02_reseau/bridge.sh
+ExecStart=/root/infrared/02_reseau/nat.sh start
+ExecStop=/root/infrared/02_reseau/nat.sh stop
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,7 @@
-
+#!/bin/bash -u
+# tests_reseau.sh : verifie bridge, NAT, IP et connectivite de chaque serveur
+# (a lancer sur la VM, en root). Code retour = nombre de tests KO.
+# Pas de -e : on veut aller au bout meme si un test echoue.
 
 . "$(dirname "$0")/reseau.conf"
 
@@ -26,6 +29,7 @@ for nom in $serveurs ; do
     lxc-attach -n "$nom" -- ip route
     test_ok "passerelle $GATEWAY"    lxc-attach -n "$nom" -- ping -c1 -W1 "$GATEWAY"
     test_ok "Internet 1.1.1.1 (NAT)" lxc-attach -n "$nom" -- ping -c1 -W2 1.1.1.1
+    test_ok "DNS externe (deb.debian.org)" lxc-attach -n "$nom" -- getent hosts deb.debian.org
     for autre in $serveurs ; do
         [ "$autre" = "$nom" ] && continue
         test_ok "-> $autre"          lxc-attach -n "$nom" -- ping -c1 -W1 "$autre"
