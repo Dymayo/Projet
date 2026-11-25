@@ -1,0 +1,29 @@
+- si la partie NFS serveur ne fonctionne, il est possible de lancer un serveur NFS sur l'hôte
+
+- montage côté NFS client
+
+https://bugs.launchpad.net/ubuntu/+source/apparmor/+bug/1811248
+
+\*\* vérifier si les conteneurs sont en mode privilegié (UNPRIVILEGED = false)
+
+root@vmbaseadminsysgrp0-0:~# lxc-ls --fancy
+NAME STATE AUTOSTART GROUPS IPV4 IPV6 UNPRIVILEGED
+bdd2 STOPPED 0 - - - false
+db STOPPED 0 - - - false
+krb STOPPED 0 - - - false
+ldap STOPPED 0 - - - false
+nfs1 RUNNING 0 - 10.0.3.2 - false
+srv STOPPED 0 - - - false
+ssh STOPPED 0 - - - false
+test RUNNING 0 - 10.0.3.2 - false
+web STOPPED 0 - - - false
+
+- modifier /etc/apparmor.d/lxc/lxc-default-cgns , ajouter après "mount fstype=cgroup2 -> /sys/fs/cgroup/**,"
+  mount fstype=cgroup2 -> /sys/fs/cgroup/**,
+  mount fstype=nfs,
+  mount fstype=nfs4,
+  mount fstype=nfsd,
+  mount fstype=rpc_pipefs,
+
+- redémarrer apparmor
+  systemctl restart apparmor

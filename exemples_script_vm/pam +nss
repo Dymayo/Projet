@@ -1,0 +1,181 @@
+* Installation (server side)
+
+** install packages
+apt update
+apt install -y sudo host lsof
+
+** install database server
+apt install -y postgresql
+
+** create schema (commong schema for pam & nss; schema adapted from libnss-pgsql)
+database="sysdb"
+dbuser="sysadm"
+dbpassword="secret91"
+dbhost="dbserv"
+
+# Create user in postgres
+sudo -u postgres createuser -d $dbuser
+# Set password
+sudo -u postgres psql -c "alter user $dbuser password '$dbpassword'"
+# Create database
+sudo -u postgres createdb --owner=$dbuser $database
+# Create schema
+
+cat >schema.sql <<EOF
+-- sequences
+CREATE SEQUENCE gidseq MINVALUE 1001 MAXVALUE 2147483647 NO CYCLE;
+CREATE SEQUENCE uidseq MINVALUE 1001 MAXVALUE 2147483647 NO CYCLE;
+-- group
+CREATE TABLE grp (
+    gid int4 NOT NULL DEFAULT nextval('gidseq'),
+    name character varying(16) UNIQUE NOT NULL, -- group name
+    descr character varying,
+    passwd character varying(20),
+    PRIMARY KEY (gid)
+);
+-- user
+CREATE TABLE usr (
+    name character varying(64) UNIQUE NOT NULL, -- user login
+    passwd character varying(128) NOT NULL,
+    uid int4 NOT NULL DEFAULT nextval('uidseq'),
+    gid int4 NOT NULL,                -- primary group id
+    gecos character varying(128),            -- gecos field
+    homedir character varying(256) NOT NULL,
+    shell character varying DEFAULT '/bin/bash' NOT NULL,
+    PRIMARY KEY (uid)
+);
+-- shadow
+CREATE TABLE shadow (
+     name character varying(64) UNIQUE NOT NULL,
+     passwd character varying(128) NOT NULL,
+     lastchange int4 NOT NULL,
+     min int4 NOT NULL,
+     max int4 NOT NULL,
+     warn int4 NOT NULL,
+     inact int4 NOT NULL,
+     expire int4 NOT NULL,
+     flag int4 NOT NULL,
+     PRIMARY KEY (name)
+);
+-- group member: map user id to group id
+CREATE TABLE member (
+    gid int4 NOT NULL,
+    uid int4 NOT NULL,
+    PRIMARY KEY (gid, uid),
+    CONSTRAINT gm_gid_fkey FOREIGN KEY (gid) REFERENCES grp(gid),
+    CONSTRAINT gm_uid_fkey FOREIGN KEY (uid) REFERENCES usr(uid)
+);
+EOF
+
+PGUSER=$dbuser PGPASSWORD=$dbpassword PGHOST=localhost psql -d $database -f schema.sql
+
+* insert a group and a user
+
+export PGUSER=$dbuser PGPASSWORD=$dbpassword PGHOST=localhost PGDATABASE=$database
+psql <<EOF
+  insert into grp ( groupname) values ('team1');
+  insert into usr ( name, passwd,   gecos,         homedir,     shell,   gid)
+  values (            'toto',  'secret', 'Thomas Dupont','/home/toto','/bin/bash',
+      (select gid from "group" where groupname='team1') ) ;
+EOF
+
+* tests
+psql <<< select * from usr
+ name     | passwd | uid  | gid  |     gecos     |  homedir   |   shell   
+----------+--------+------+------+---------------+------------+-----------
+ toto     | secret | 1001 | 1001 | Thomas Dupont | /home/toto | /bin/bash
+(1 row)
+
+----------------------------------------------------------------------
+
+* open server to outside connections
+
+** check connection from client
+root@ssh:~# nc -v db 5432
+nc: connect to db (10.0.0.2) port 5432 (tcp) failed: Connection refused
+
+** check which ip address is bound to the port (localhost)
+root@db:~# lsof -iTCP:5432 -nP 
+postgres 5922 postgres    6u  IPv6 2223841      0t0  TCP [::1]:5432 (LISTEN)
+postgres 5922 postgres    7u  IPv4 2223842      0t0  TCP 127.0.0.1:5432 (LISTEN)
+
+** modify listen address in postgresql config
+
+sed -i "/.*listen_addresses =.*/s//listen_addresses = '*'/"  /etc/postgresql/16/main/postgresql.conf
+
+** re-check port bind (any)
+COMMAND   PID     USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME
+postgres 5958 postgres    6u  IPv4 2226518      0t0  TCP *:5432 (LISTEN)
+postgres 5958 postgres    7u  IPv6 2226519      0t0  TCP *:5432 (LISTEN)
+** re-check connection from client
+root@ssh:~# nc -v db 5432
+Connection to db (10.0.0.2) 5432 port [tcp/postgresql] succeeded!
+
+----------------------------------------------------------------------
+
+* installation (client side)
+apt install -y libpam-pgsql libnss-pgsql2
+
+* configuration on client
+
+** test db access
+dbuser="user1"
+dbpassword="secret91"
+database="userdb"
+dbhost="db"
+export PGUSER=$dbuser PGPASSWORD=$dbpassword PGHOST=$dbhost PGDATABASE=$database
+psql -c '\d'
+
+** PAM
+
+cat <<EOF >/etc/pam_pgsql.conf
+connect = dbname=userdb user=user1 password=secret91 host=db connect_timeout=15
+auth_query = select passwd from usr where name = %u
+pw_type = clear
+pwd_query = update usr set passwd = %p where user_name = %u
+acct_query = select false,false,false ;
+EOF
+
+#  acct_query - usr options query (should return 3 or 4 boolean columns -- expired, new password required and password is null, return PAM_PERM_DENIED (y/n)) overrides other usr specific options
+# acct_query = select (acc_expired = 'y' OR acc_expired = '1'), (acc_new_pwreq = 'y' OR acc_new_pwreq = '1'), (user_password IS NULL OR user_password = '') from usr where user_name = %u
+
+** test: use login command
+cat >/etc/pam.d/login  <<EOF
+auth        required    pam_pgsql.so
+account     required    pam_pgsql.so
+password    required    pam_pgsql.so
+session     required    pam_pgsql.so
+EOF
+
+** libnss pgsql
+
+cat >/etc/nss-pgsql.conf <<EOF
+# See https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
+connectionstring        = hostaddr=10.0.0.4 dbname=sysdb user=user1 password=secret91 sslmode=disable
+
+# Must return           name
+getgroupmembersbygid   = SELECT name FROM passwd WHERE gid = $1
+# Must return           name, passwd, gecos, homedir, shell, uid, gid
+getpwnam       = SELECT name, passwd, gecos, homedir, shell, uid, gid FROM usr WHERE name = $1
+# Must return           name, passwd, gecos, homedir, shell, uid, gid
+getpwuid       = SELECT name, passwd, gecos, homedir, shell, uid, gid FROM usr WHERE uid = $1
+# Must return           name, passwd, gecos, homedir, shell, uid, gid
+allusers       = SELECT name, passwd, gecos, homedir, shell, uid, gid FROM usr
+
+# Must return           name, passwd, gid, array of group members
+getgrnam       = SELECT name, passwd, gid, ARRAY(SELECT name FROM member m WHERE m.gid = grp.gid) AS members FROM grp WHERE groupname = $1
+# Must return           name, passwd, gid
+getgrgid       = SELECT name, passwd, gid, ARRAY(SELECT name FROM member m WHERE m.gid = grp.gid) AS members descr   FROM grp WHERE gid = $1
+# Must return gid.  %s MUST appear first for name match in where clause
+groups_dyn      = SELECT m.gid FROM usr JOIN member m ON (m.uid=usr.uid) where usr.name = $1 and m.gid <> $2
+# Must return           name, passwd, gid
+allgroups      = SELECT name, passwd, gid  FROM grp
+EOF
+
+** set nsswitch.conf
+
+sed -i \
+-e 's/^passwd:.*/passwd:         pgsql files systemd/' \
+-e 's/^group:.*/group:          pgsql files systemd/' \
+-e 's/^shadow:.*/shadow:         pgsql files systemd/' \
+/etc/nsswitch.conf
